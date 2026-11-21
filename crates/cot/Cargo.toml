@@ -1,0 +1,12 @@
+[package]
+name = "cot"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Cursor on Target (CoT) types, XML and TAK protobuf codecs, and stream framing"
+
+[dependencies]
+chrono.workspace = true
+prost.workspace = true
+roxmltree.workspace = true
+thiserror.workspace = true
