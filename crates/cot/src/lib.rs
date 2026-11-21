@@ -3,6 +3,7 @@
 //! Covers the event model, the legacy XML encoding, TAK protocol v1 (protobuf), and the
 //! framing used on UDP mesh and TCP streams.
 
+pub mod chat;
 mod cot_type;
 mod error;
 mod event;
@@ -13,3 +14,4 @@ mod xml;
 pub use cot_type::{Affiliation, CotType, Dimension};
 pub use error::{Error, Result};
 pub use event::{Contact, Detail, Event, Group, Point, PrecisionLocation, Status, Takv, Track};
+pub use xml::escape as xml_escape;

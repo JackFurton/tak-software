@@ -261,6 +261,18 @@ fn attr(out: &mut String, name: &str, value: &str) {
     out.push(' ');
     out.push_str(name);
     out.push_str("=\"");
+    escape_into(out, value);
+    out.push('"');
+}
+
+/// Escapes text for use in an XML attribute value or element content.
+pub fn escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    escape_into(&mut out, value);
+    out
+}
+
+fn escape_into(out: &mut String, value: &str) {
     for c in value.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -276,5 +288,4 @@ fn attr(out: &mut String, name: &str, value: &str) {
             c => out.push(c),
         }
     }
-    out.push('"');
 }

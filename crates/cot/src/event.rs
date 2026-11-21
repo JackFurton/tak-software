@@ -119,6 +119,28 @@ pub struct Group {
     pub role: String,
 }
 
+impl Group {
+    /// ATAK's fixed team colors; clients ignore any other name.
+    pub const TEAMS: &[&str] = &[
+        "White",
+        "Yellow",
+        "Orange",
+        "Magenta",
+        "Red",
+        "Maroon",
+        "Purple",
+        "Dark Blue",
+        "Blue",
+        "Cyan",
+        "Teal",
+        "Green",
+        "Dark Green",
+        "Brown",
+    ];
+    pub const ROLES: &[&str] =
+        &["Team Member", "Team Lead", "HQ", "Sniper", "Medic", "Forward Observer", "RTO", "K9"];
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrecisionLocation {
     pub geopointsrc: Option<String>,

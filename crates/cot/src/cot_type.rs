@@ -60,6 +60,13 @@ impl<'a> CotType<'a> {
         Some(format!("{sidc:-<15}"))
     }
 
+    /// Short human label: the well-known name, else affiliation and dimension ("Hostile air").
+    pub fn label(&self) -> Option<String> {
+        self.description()
+            .map(String::from)
+            .or_else(|| Some(format!("{} {}", self.affiliation()?.name(), self.dimension()?.name())))
+    }
+
     /// Human name for well-known non-atom types.
     pub fn description(&self) -> Option<&'static str> {
         WELL_KNOWN.iter().find(|(t, _)| *t == self.0).map(|(_, d)| *d)
@@ -145,6 +152,22 @@ impl Affiliation {
         }
     }
 
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Unknown => "Unknown",
+            Self::AssumedFriend => "Assumed friend",
+            Self::Friend => "Friend",
+            Self::Neutral => "Neutral",
+            Self::Suspect => "Suspect",
+            Self::Hostile => "Hostile",
+            Self::Joker => "Joker",
+            Self::Faker => "Faker",
+            Self::NoneSpecified => "Unspecified",
+            Self::Other => "Other",
+        }
+    }
+
     fn sidc_code(self) -> char {
         match self {
             // 2525C has no "other" affiliation.
@@ -177,6 +200,18 @@ impl Dimension {
             'X' => Self::Other,
             _ => return None,
         })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Space => "space",
+            Self::Air => "air",
+            Self::Ground => "ground",
+            Self::SeaSurface => "sea surface",
+            Self::Subsurface => "subsurface",
+            Self::Sof => "SOF",
+            Self::Other => "other",
+        }
     }
 
     pub fn code(self) -> char {

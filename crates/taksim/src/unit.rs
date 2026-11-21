@@ -8,26 +8,8 @@ use serde::Deserialize;
 use crate::geo::{self, LatLon};
 use crate::route::{Mode, Route};
 
-/// ATAK's fixed team colors; any other `__group name` is ignored by clients.
-pub const TEAMS: &[&str] = &[
-    "White",
-    "Yellow",
-    "Orange",
-    "Magenta",
-    "Red",
-    "Maroon",
-    "Purple",
-    "Dark Blue",
-    "Blue",
-    "Cyan",
-    "Teal",
-    "Green",
-    "Dark Green",
-    "Brown",
-];
-
-pub const ROLES: &[&str] =
-    &["Team Member", "Team Lead", "HQ", "Sniper", "Medic", "Forward Observer", "RTO", "K9"];
+pub const TEAMS: &[&str] = Group::TEAMS;
+pub const ROLES: &[&str] = Group::ROLES;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +145,7 @@ impl Unit {
             os: Some(std::env::consts::OS.into()),
             version: Some(env!("CARGO_PKG_VERSION").into()),
         });
-        d.xml = format!(r#"<uid Droid="{}"/>"#, xml_escape(&self.callsign));
+        d.xml = format!(r#"<uid Droid="{}"/>"#, cot::xml_escape(&self.callsign));
         ev
     }
 }
@@ -196,10 +178,6 @@ pub fn swarm(count: usize, center: LatLon, radius: f64) -> Vec<Unit> {
 
 fn default_uid(callsign: &str) -> String {
     format!("taksim-{}", callsign.to_lowercase().replace(char::is_whitespace, "-"))
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 #[cfg(test)]

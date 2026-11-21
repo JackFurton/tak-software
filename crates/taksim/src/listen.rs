@@ -57,12 +57,7 @@ fn join(group: SocketAddrV4, iface: Ipv4Addr) -> io::Result<UdpSocket> {
 
 fn summarize(ev: &cot::Event) -> String {
     let callsign = ev.detail.contact.as_ref().map_or("-", |c| c.callsign.as_str());
-    let kind = ev.cot_type();
-    let label = kind
-        .description()
-        .map(String::from)
-        .or_else(|| Some(format!("{:?} {:?}", kind.affiliation()?, kind.dimension()?)))
-        .unwrap_or_default();
+    let label = ev.cot_type().label().unwrap_or_default();
     let motion = ev
         .detail
         .track

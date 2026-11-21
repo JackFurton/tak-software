@@ -12,6 +12,9 @@ fn reads_atom_segments() {
     assert!(!chat.is_atom());
     assert_eq!(chat.affiliation(), None);
     assert_eq!(chat.description(), Some("GeoChat message"));
+    assert_eq!(chat.label().as_deref(), Some("GeoChat message"));
+    assert_eq!(t.label().as_deref(), Some("Hostile air"));
+    assert_eq!(CotType::new("x-y").label(), None);
 }
 
 #[test]
