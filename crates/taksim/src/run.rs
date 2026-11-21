@@ -7,13 +7,13 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::sink::{Mesh, StreamClient};
+use crate::sink::{Encoding, Mesh, StreamClient};
 use crate::unit::Unit;
 
 pub struct Outputs {
     pub mesh: Option<Arc<Mesh>>,
     /// Each unit opens its own connection, like a fleet of separate phones.
-    pub tcp: Option<String>,
+    pub tcp: Option<(String, Encoding)>,
     pub stdout: bool,
 }
 
@@ -32,8 +32,10 @@ pub async fn run(units: Vec<Unit>, interval: Duration, outputs: Outputs, cancel:
         // Spread units across the interval so a big swarm doesn't send in one burst.
         let offset = interval * i as u32 / count.max(1);
         tasks.spawn(async move {
-            let tcp =
-                outputs.tcp.clone().map(|addr| StreamClient::spawn(addr, unit.uid.clone(), cancel.clone()));
+            let tcp = outputs
+                .tcp
+                .clone()
+                .map(|(addr, enc)| StreamClient::spawn(addr, unit.uid.clone(), enc, cancel.clone()));
             let mut ticker = tokio::time::interval_at(started + offset, interval);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {

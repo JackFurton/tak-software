@@ -2,20 +2,23 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use cot::Event;
+use chrono::Utc;
 use cot::framing::{self, StreamDecoder};
+use cot::{Event, takp};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 pub const MESH_GROUP: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 2, 3, 1), 6969);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum MeshFormat {
+pub enum Encoding {
     Xml,
     Protobuf,
 }
@@ -24,18 +27,13 @@ pub enum MeshFormat {
 pub struct Mesh {
     socket: UdpSocket,
     dest: SocketAddr,
-    format: MeshFormat,
+    format: Encoding,
 }
 
 impl Mesh {
     /// `iface` picks the outgoing interface by its IPv4 address; hosts with several (WSL, VPNs,
     /// Docker bridges) otherwise send wherever the default route points.
-    pub fn new(
-        dest: SocketAddrV4,
-        iface: Option<Ipv4Addr>,
-        ttl: u32,
-        format: MeshFormat,
-    ) -> io::Result<Self> {
+    pub fn new(dest: SocketAddrV4, iface: Option<Ipv4Addr>, ttl: u32, format: Encoding) -> io::Result<Self> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_multicast_ttl_v4(ttl)?;
         socket.set_multicast_loop_v4(true)?;
@@ -49,21 +47,21 @@ impl Mesh {
 
     pub async fn send(&self, ev: &Event) -> io::Result<()> {
         let bytes = match self.format {
-            MeshFormat::Xml => ev.to_xml().into_bytes(),
-            MeshFormat::Protobuf => framing::encode_mesh(&ev.to_tak_message()),
+            Encoding::Xml => ev.to_xml().into_bytes(),
+            Encoding::Protobuf => framing::encode_mesh(&ev.to_tak_message()),
         };
         self.socket.send_to(&bytes, self.dest).await.map(drop)
     }
 }
 
-/// One simulated device's connection to a TAK server, run on its own task so connecting and
+/// One unit's connection to a TAK server, run on its own task so slow connects and reconnect
 /// backoff never delay the unit's reports or shutdown. Reports that pile up while disconnected
 /// are dropped except the newest, since each one supersedes the last.
 ///
-/// Always speaks XML: a server only switches a connection to protobuf after negotiating it, and
-/// every server accepts XML.
+/// Starts on XML, as every server expects. With [`Encoding::Protobuf`] it accepts a server's
+/// protocol offer and switches, as ATAK does.
 pub struct StreamClient {
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<Event>,
     task: JoinHandle<()>,
 }
 
@@ -72,16 +70,18 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 // A server that stops reading would otherwise block shutdown forever.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+// protocol.txt: a client with no answer after a minute must drop the connection.
+const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl StreamClient {
-    pub fn spawn(addr: String, uid: String, cancel: CancellationToken) -> Self {
+    pub fn spawn(addr: String, uid: String, encoding: Encoding, cancel: CancellationToken) -> Self {
         let (tx, rx) = mpsc::channel(QUEUE);
-        let task = tokio::spawn(connection(addr, uid, rx, cancel));
+        let task = tokio::spawn(connection(addr, uid, rx, encoding, cancel));
         Self { tx, task }
     }
 
     pub fn send(&self, ev: &Event) {
-        if self.tx.try_send(ev.to_xml().into_bytes()).is_err() {
+        if self.tx.try_send(ev.clone()).is_err() {
             debug!(uid = %ev.uid, "server connection backed up, dropping report");
         }
     }
@@ -93,7 +93,27 @@ impl StreamClient {
     }
 }
 
-async fn connection(addr: String, uid: String, mut rx: mpsc::Receiver<Vec<u8>>, cancel: CancellationToken) {
+/// What the reader saw that the writer has to act on.
+enum Negotiation {
+    Offered { uid: String, version_ok: bool },
+    Answered(bool),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wire {
+    Xml,
+    /// Request sent; the client may not send anything until the server answers.
+    Waiting,
+    Protobuf,
+}
+
+async fn connection(
+    addr: String,
+    uid: String,
+    mut rx: mpsc::Receiver<Event>,
+    encoding: Encoding,
+    cancel: CancellationToken,
+) {
     let mut backoff = Duration::from_secs(1);
     loop {
         let attempt = tokio::select! {
@@ -117,31 +137,57 @@ async fn connection(addr: String, uid: String, mut rx: mpsc::Receiver<Vec<u8>>, 
         info!(%uid, %addr, "connected");
         backoff = Duration::from_secs(1);
         let (reader, mut writer) = stream.into_split();
-        tokio::spawn(drain(reader, uid.clone()));
+        let (neg_tx, mut neg_rx) = mpsc::channel(4);
+        tokio::spawn(drain(reader, uid.clone(), neg_tx));
 
         let mut pending = None;
-        while let Ok(bytes) = rx.try_recv() {
-            pending = Some(bytes);
+        while let Ok(ev) = rx.try_recv() {
+            pending = Some(ev);
         }
+        let mut wire = Wire::Xml;
+        let mut deadline = Instant::now();
         loop {
-            let bytes = match pending.take() {
-                Some(b) => b,
-                None => match rx.recv().await {
-                    Some(b) => b,
+            if wire != Wire::Waiting
+                && let Some(ev) = pending.take()
+            {
+                let bytes = match wire {
+                    Wire::Protobuf => framing::encode_stream(&ev.to_tak_message()),
+                    _ => ev.to_xml().into_bytes(),
+                };
+                if !write(&mut writer, &bytes, &uid, &addr).await {
+                    break;
+                }
+                continue;
+            }
+            tokio::select! {
+                msg = neg_rx.recv() => match msg {
+                    // The reader only stops when the server hangs up.
+                    None => break,
+                    Some(Negotiation::Offered { uid: nid, version_ok }) => {
+                        if encoding == Encoding::Protobuf && version_ok && wire == Wire::Xml {
+                            let ask = takp::request(&nid, takp::VERSION, Utc::now()).to_xml();
+                            if !write(&mut writer, ask.as_bytes(), &uid, &addr).await {
+                                break;
+                            }
+                            wire = Wire::Waiting;
+                            deadline = Instant::now() + NEGOTIATION_TIMEOUT;
+                        }
+                    }
+                    Some(Negotiation::Answered(accepted)) if wire == Wire::Waiting => {
+                        info!(%uid, accepted, "protocol negotiation answered");
+                        wire = if accepted { Wire::Protobuf } else { Wire::Xml };
+                    }
+                    Some(Negotiation::Answered(_)) => {}
+                },
+                ev = rx.recv() => match ev {
+                    Some(ev) => pending = Some(ev),
                     None => {
                         let _ = writer.shutdown().await;
                         return;
                     }
                 },
-            };
-            match tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(&bytes)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    warn!(%uid, %addr, "write failed, reconnecting: {e}");
-                    break;
-                }
-                Err(_) => {
-                    warn!(%uid, %addr, "server stopped reading, reconnecting");
+                _ = tokio::time::sleep_until(deadline), if wire == Wire::Waiting => {
+                    warn!(%uid, %addr, "server never answered the protocol request, reconnecting");
                     break;
                 }
             }
@@ -149,9 +195,23 @@ async fn connection(addr: String, uid: String, mut rx: mpsc::Receiver<Vec<u8>>, 
     }
 }
 
+async fn write(writer: &mut OwnedWriteHalf, bytes: &[u8], uid: &str, addr: &str) -> bool {
+    match tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(bytes)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!(%uid, %addr, "write failed, reconnecting: {e}");
+            false
+        }
+        Err(_) => {
+            warn!(%uid, %addr, "server stopped reading, reconnecting");
+            false
+        }
+    }
+}
+
 // Servers relay everyone's traffic to every client. It has to be read or the socket buffer fills
 // and the server stalls or drops us.
-async fn drain(mut reader: tokio::net::tcp::OwnedReadHalf, uid: String) {
+async fn drain(mut reader: OwnedReadHalf, uid: String, negotiation: mpsc::Sender<Negotiation>) {
     let mut decoder = StreamDecoder::default();
     let mut buf = vec![0u8; 16 * 1024];
     loop {
@@ -160,19 +220,28 @@ async fn drain(mut reader: tokio::net::tcp::OwnedReadHalf, uid: String) {
             Ok(n) => decoder.extend(&buf[..n]),
         }
         loop {
-            match decoder.next_frame() {
-                Ok(Some(frame)) => {
-                    if let Ok(msg) = frame.decode()
-                        && let Some(ev) = msg.event
-                    {
-                        debug!(%uid, from = %ev.uid, kind = %ev.event_type, "received");
-                    }
-                }
+            let frame = match decoder.next_frame() {
+                Ok(Some(frame)) => frame,
                 Ok(None) => break,
                 Err(e) => {
                     warn!(%uid, "unreadable stream from server: {e}");
                     return;
                 }
+            };
+            let Some(ev) = frame.decode().ok().and_then(|m| m.event) else { continue };
+            let note = if let Some(accepted) = takp::response_status(&ev) {
+                Some(Negotiation::Answered(accepted))
+            } else if ev.event_type == takp::SUPPORT_TYPE {
+                let version_ok = takp::supported_versions(&ev).contains(&takp::VERSION);
+                Some(Negotiation::Offered { uid: ev.uid.clone(), version_ok })
+            } else {
+                debug!(%uid, from = %ev.uid, kind = %ev.event_type, "received");
+                None
+            };
+            if let Some(note) = note
+                && negotiation.send(note).await.is_err()
+            {
+                return;
             }
         }
     }

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use taksim::geo::LatLon;
 use taksim::run::{Outputs, run};
-use taksim::sink::{MESH_GROUP, Mesh, MeshFormat};
+use taksim::sink::{Encoding, MESH_GROUP, Mesh};
 use taksim::unit::{Scenario, swarm};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -53,8 +53,8 @@ struct RunArgs {
     /// Send to the mesh multicast group.
     #[arg(long)]
     mesh: bool,
-    #[arg(long, value_enum, default_value_t = MeshFormat::Xml)]
-    mesh_format: MeshFormat,
+    #[arg(long, value_enum, default_value_t = Encoding::Xml)]
+    mesh_format: Encoding,
     #[command(flatten)]
     group: GroupArgs,
     /// Multicast TTL; 1 keeps traffic on the local network.
@@ -63,6 +63,9 @@ struct RunArgs {
     /// Connect each unit to a TAK server's plain streaming port, e.g. 127.0.0.1:8087.
     #[arg(long)]
     tcp: Option<String>,
+    /// `protobuf` accepts a server's offer to switch from XML, as ATAK does; `xml` declines it.
+    #[arg(long, value_enum, default_value_t = Encoding::Protobuf)]
+    tcp_format: Encoding,
     /// Print each event's XML.
     #[arg(long)]
     stdout: bool,
@@ -165,7 +168,11 @@ async fn run_units(args: RunArgs, cancel: CancellationToken) -> Result<()> {
     }
 
     info!(units = units.len(), ?interval, mesh = args.mesh, tcp = ?args.tcp, "starting");
-    let outputs = Outputs { mesh: mesh.map(Arc::new), tcp: args.tcp, stdout: args.stdout };
+    let outputs = Outputs {
+        mesh: mesh.map(Arc::new),
+        tcp: args.tcp.map(|addr| (addr, args.tcp_format)),
+        stdout: args.stdout,
+    };
     run(units, interval, outputs, cancel).await;
     info!("stopped");
     Ok(())

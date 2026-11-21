@@ -54,6 +54,7 @@ cargo run -p taksim -- listen                  # watch the mesh, in one terminal
 cargo run -p taksim -- run --mesh              # built-in demo around the National Mall
 cargo run -p taksim -- run --stdout --swarm 1  # print raw CoT XML
 cargo run -p taksim -- run --tcp 127.0.0.1:8087 --swarm 500   # one connection per unit
+cargo run -p taksim -- run --tcp 127.0.0.1:8087 --tcp-format xml   # decline protobuf
 ```
 
 An ATAK phone on the same network shows mesh units without any server. If it doesn't, pass
