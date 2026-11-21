@@ -13,9 +13,26 @@ server (`8087` plain, `8089` TLS).
 - `crates/cot`: CoT event model, XML and protobuf codecs, mesh and stream framing, type-code
   parsing and MIL-STD-2525C symbol IDs.
 - `crates/taksim`: simulated devices that walk routes and report position, plus a mesh listener.
+- `crates/takserver`: relays CoT between TAK clients on TCP 8087, the mesh, and the web UI.
+- `web/`: browser client (React, MapLibre, milsymbol) that acts as a TAK device: map, contacts,
+  GeoChat, markers.
 - `scenarios/`: unit definitions for `taksim run --scenario`.
 
-## Simulator
+## Running it
+
+```sh
+(cd web && npm install && npm run build)
+cargo run -p takserver                                   # TAK on :8087, UI on http://127.0.0.1:8080
+cargo run -p taksim -- run --tcp 127.0.0.1:8087          # in another terminal
+```
+
+Add `--mesh` to takserver to bridge phones that use mesh SA without a server. To point ATAK at
+it, add a server connection to this machine's LAN IP, port 8087, protocol TCP. Port 8087 is
+unauthenticated, as on TAK Server, so keep it on networks you trust.
+
+For UI work, `npm run dev` in `web/` serves with hot reload and proxies to the takserver on :8080.
+
+## Simulator only
 
 ```sh
 cargo run -p taksim -- listen                  # watch the mesh, in one terminal
