@@ -14,6 +14,7 @@ async fn server() -> (Server, CancellationToken) {
     let cancel = CancellationToken::new();
     let config = Config {
         tcp: "127.0.0.1:0".parse().unwrap(),
+        tls: None,
         http: "127.0.0.1:0".parse().unwrap(),
         web_root: None,
         mesh: None,

@@ -9,13 +9,14 @@ use std::time::Duration;
 use chrono::Utc;
 use cot::framing::{self, StreamDecoder};
 use cot::{Event, Point, takp};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch};
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::certs;
 use crate::hub::{Envelope, Hub, PING_TYPE, Peer, Source};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -24,22 +25,51 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 // link that never sent FIN (phone left Wi-Fi).
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn serve(listener: TcpListener, hub: Arc<Hub>, cancel: CancellationToken) {
+    while let Some((stream, peer)) = accept(&listener, &cancel).await {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        info!(%peer, id, "client connected");
+        tokio::spawn(client(stream, peer, id, hub.clone(), cancel.child_token()));
+    }
+}
+
+/// Like [`serve`], but every client must complete a TLS handshake with a certificate from our CA.
+pub async fn serve_tls(listener: TcpListener, tls: TlsAcceptor, hub: Arc<Hub>, cancel: CancellationToken) {
+    while let Some((stream, peer)) = accept(&listener, &cancel).await {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let (tls, hub, cancel) = (tls.clone(), hub.clone(), cancel.child_token());
+        // Handshakes run on their own task so a client that stalls mid-handshake can't hold up
+        // everyone else's accept.
+        tokio::spawn(async move {
+            let stream = match tokio::time::timeout(HANDSHAKE_TIMEOUT, tls.accept(stream)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => return warn!(%peer, id, "TLS handshake failed: {e}"),
+                Err(_) => return warn!(%peer, id, "TLS handshake timed out"),
+            };
+            let cert = stream.get_ref().1.peer_certificates().and_then(certs::peer_name);
+            info!(%peer, id, cert = cert.as_deref().unwrap_or("-"), "TLS client connected");
+            client(stream, peer, id, hub, cancel).await;
+        });
+    }
+}
+
+async fn accept(listener: &TcpListener, cancel: &CancellationToken) -> Option<(TcpStream, SocketAddr)> {
     loop {
-        let (stream, peer) = tokio::select! {
+        tokio::select! {
             r = listener.accept() => match r {
-                Ok(c) => c,
+                Ok((stream, peer)) => {
+                    let _ = stream.set_nodelay(true);
+                    return Some((stream, peer));
+                }
                 Err(e) => {
                     warn!("accept failed: {e}");
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
                 }
             },
-            _ = cancel.cancelled() => return,
-        };
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(client(stream, peer, id, hub.clone(), cancel.child_token()));
+            _ = cancel.cancelled() => return None,
+        }
     }
 }
 
@@ -50,10 +80,11 @@ enum Direct {
     SwitchToProtobuf(Event),
 }
 
-async fn client(stream: TcpStream, peer: SocketAddr, id: u64, hub: Arc<Hub>, cancel: CancellationToken) {
-    let _ = stream.set_nodelay(true);
-    info!(%peer, id, "client connected");
-    let (reader, writer) = stream.into_split();
+async fn client<S>(stream: S, peer: SocketAddr, id: u64, hub: Arc<Hub>, cancel: CancellationToken)
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let (reader, writer) = tokio::io::split(stream);
     let (direct_tx, direct_rx) = mpsc::channel(8);
     let (who_tx, who_rx) = watch::channel(None);
     // Subscribe before taking the snapshot so nothing published in between is missed.
@@ -68,7 +99,7 @@ async fn client(stream: TcpStream, peer: SocketAddr, id: u64, hub: Arc<Hub>, can
 }
 
 async fn read_loop(
-    mut reader: OwnedReadHalf,
+    mut reader: impl AsyncRead + Unpin,
     hub: &Hub,
     id: u64,
     direct: mpsc::Sender<Direct>,
@@ -158,7 +189,7 @@ fn identify(ev: &Event, who: &watch::Sender<Option<Peer>>, id: u64) {
 }
 
 async fn write_loop(
-    mut writer: OwnedWriteHalf,
+    mut writer: impl AsyncWrite + Unpin,
     mut rx: broadcast::Receiver<Arc<Envelope>>,
     mut direct: mpsc::Receiver<Direct>,
     who: watch::Receiver<Option<Peer>>,
@@ -216,7 +247,7 @@ fn encode(ev: &Event, protobuf: bool) -> Vec<u8> {
     if protobuf { framing::encode_stream(&ev.to_tak_message()) } else { ev.to_xml().into_bytes() }
 }
 
-async fn write(writer: &mut OwnedWriteHalf, bytes: &[u8], id: u64) -> bool {
+async fn write(writer: &mut (impl AsyncWrite + Unpin), bytes: &[u8], id: u64) -> bool {
     match tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(bytes)).await {
         Ok(Ok(())) => true,
         Ok(Err(e)) => {

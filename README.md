@@ -13,9 +13,10 @@ server (`8087` plain, `8089` TLS).
 - `crates/cot`: CoT event model, XML and protobuf codecs, mesh and stream framing, type-code
   parsing and MIL-STD-2525C symbol IDs.
 - `crates/taksim`: simulated devices that walk routes and report position, plus a mesh listener.
-- `crates/takserver`: relays CoT between TAK clients on TCP 8087, the mesh, and the web UI.
+- `crates/takserver`: relays CoT between TAK clients (TCP 8087, TLS 8089), the mesh, and the
+  web UI. Negotiates protobuf per connection and honours `<marti><dest>` addressing.
 - `web/`: browser client (React, MapLibre, milsymbol) that acts as a TAK device: map, contacts,
-  GeoChat, markers.
+  GeoChat including direct messages, markers.
 - `scenarios/`: unit definitions for `taksim run --scenario`.
 
 ## Running it
@@ -29,6 +30,20 @@ cargo run -p taksim -- run --tcp 127.0.0.1:8087          # in another terminal
 Add `--mesh` to takserver to bridge phones that use mesh SA without a server. To point ATAK at
 it, add a server connection to this machine's LAN IP, port 8087, protocol TCP. Port 8087 is
 unauthenticated, as on TAK Server, so keep it on networks you trust.
+
+### TLS and ATAK data packages
+
+```sh
+cargo run -p takserver -- certs init --host 192.168.1.155            # CA + server cert in certs/
+cargo run -p takserver -- certs client viper --connect 192.168.1.155:8089
+cargo run -p takserver -- --tls 0.0.0.0:8089
+```
+
+`certs client` writes `certs/clients/viper.zip`, a data package holding the CA truststore, the
+device's certificate and the server entry. Copy it to the phone and open it with ATAK's Import
+Manager; the keystore password is `atakatak`. Only devices holding a certificate from this CA can
+connect on 8089. Keys are ECDSA P-256 and the .p12 files use the legacy 3DES format Android
+expects.
 
 For UI work, `npm run dev` in `web/` serves with hot reload and proxies to the takserver on :8080.
 

@@ -1,3 +1,4 @@
+pub mod certs;
 pub mod hub;
 pub mod mesh;
 pub mod tcp;
@@ -16,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 
 pub struct Config {
     pub tcp: SocketAddr,
+    /// TLS streaming port and the directory holding `takserver certs init` output.
+    pub tls: Option<(SocketAddr, PathBuf)>,
     pub http: SocketAddr,
     pub web_root: Option<PathBuf>,
     pub mesh: Option<(SocketAddrV4, Option<Ipv4Addr>)>,
@@ -23,6 +26,7 @@ pub struct Config {
 
 pub struct Server {
     pub tcp_addr: SocketAddr,
+    pub tls_addr: Option<SocketAddr>,
     pub http_addr: SocketAddr,
     pub hub: Arc<hub::Hub>,
     tasks: JoinSet<()>,
@@ -49,6 +53,13 @@ pub async fn start(config: Config, cancel: CancellationToken) -> anyhow::Result<
     }
 
     let (tcp_addr, http_addr) = (tcp.local_addr()?, http.local_addr()?);
+    let mut tls_addr = None;
+    if let Some((addr, dir)) = config.tls {
+        let acceptor = tokio_rustls::TlsAcceptor::from(certs::server_config(&dir)?);
+        let listener = TcpListener::bind(addr).await.with_context(|| format!("binding TLS port {addr}"))?;
+        tls_addr = Some(listener.local_addr()?);
+        tasks.spawn(tcp::serve_tls(listener, acceptor, hub.clone(), cancel.clone()));
+    }
 
     tasks.spawn(tcp::serve(tcp, hub.clone(), cancel.clone()));
     let app = web::router(hub.clone(), config.web_root, cancel.clone());
@@ -71,5 +82,5 @@ pub async fn start(config: Config, cancel: CancellationToken) -> anyhow::Result<
         }
     });
 
-    Ok(Server { tcp_addr, http_addr, hub, tasks })
+    Ok(Server { tcp_addr, tls_addr, http_addr, hub, tasks })
 }
