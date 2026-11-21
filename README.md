@@ -12,6 +12,20 @@ server (`8087` plain, `8089` TLS).
 
 - `crates/cot`: CoT event model, XML and protobuf codecs, mesh and stream framing, type-code
   parsing and MIL-STD-2525C symbol IDs.
+- `crates/taksim`: simulated devices that walk routes and report position, plus a mesh listener.
+- `scenarios/`: unit definitions for `taksim run --scenario`.
+
+## Simulator
+
+```sh
+cargo run -p taksim -- listen                  # watch the mesh, in one terminal
+cargo run -p taksim -- run --mesh              # built-in demo around the National Mall
+cargo run -p taksim -- run --stdout --swarm 1  # print raw CoT XML
+cargo run -p taksim -- run --tcp 127.0.0.1:8087 --swarm 500   # one connection per unit
+```
+
+An ATAK phone on the same network shows mesh units without any server. If it doesn't, pass
+`--iface <this machine's LAN IP>` so multicast leaves on the right interface.
 
 ## Roadmap
 

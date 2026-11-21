@@ -1,0 +1,40 @@
+# Five units around the National Mall. Waypoints are [lat, lon]; speed is m/s.
+interval_secs = 5
+
+[[unit]]
+callsign = "VIPER"
+team = "Cyan"
+role = "Team Lead"
+speed = 1.4
+route = [[38.8893, -77.0502], [38.8895, -77.0353], [38.8899, -77.0091]]
+mode = "pingpong"
+
+[[unit]]
+callsign = "COBRA"
+team = "Cyan"
+speed = 1.6
+route = [[38.8895, -77.0353], [38.8814, -77.0365], [38.8893, -77.0502]]
+
+[[unit]]
+callsign = "MEDIC-1"
+team = "Cyan"
+role = "Medic"
+speed = 1.2
+route = [[38.8977, -77.0365], [38.8895, -77.0353]]
+mode = "pingpong"
+
+[[unit]]
+callsign = "TRUCK-2"
+type = "a-f-G-E-V"
+team = "Green"
+role = "RTO"
+speed = 9
+route = [[38.8921, -77.0502], [38.8921, -77.0091], [38.8868, -77.0091], [38.8868, -77.0502]]
+
+[[unit]]
+callsign = "OVERWATCH"
+type = "a-f-A-M-F-Q"
+team = "Yellow"
+role = "Forward Observer"
+speed = 22
+route = [[38.8960, -77.0420], [38.8960, -77.0280], [38.8830, -77.0280], [38.8830, -77.0420]]
