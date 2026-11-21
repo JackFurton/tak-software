@@ -58,7 +58,8 @@ pub async fn bridge(
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            if env.source == Source::Mesh || env.event.event_type == PING_TYPE {
+            // Multicast reaches everyone, so addressed events (direct chat) would leak to the room.
+            if env.source == Source::Mesh || env.event.event_type == PING_TYPE || !env.dest.is_empty() {
                 continue;
             }
             if let Err(e) = send.send_to(env.xml.as_bytes(), group).await {

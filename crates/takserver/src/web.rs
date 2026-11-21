@@ -9,6 +9,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use chrono::Utc;
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
@@ -16,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{info, warn};
 
-use crate::hub::{Hub, Source};
+use crate::hub::{Hub, Peer, Source};
 use crate::wire::{ClientOp, WebSession};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -63,12 +64,14 @@ async fn session(socket: WebSocket, state: AppState) {
     let mut web = WebSession::default();
     info!(id, "web client connected");
 
-    for env in state.hub.snapshot() {
+    // Addressed events wait for hello, when we know who this is.
+    for env in state.hub.snapshot().iter().filter(|e| e.visible_to(None)) {
         if sink.send(Message::Text(env.json.clone().into())).await.is_err() {
             return;
         }
     }
 
+    let mut peer = None;
     let mut window = (Instant::now(), 0u32);
     loop {
         let out = tokio::select! {
@@ -93,13 +96,25 @@ async fn session(socket: WebSocket, state: AppState) {
                             state.hub.publish(Source::Web(id), ev);
                             None
                         }
-                        Ok(None) => None,
+                        Ok(None) => {
+                            let now = web.peer();
+                            if now != peer {
+                                peer = now;
+                                if !replay_addressed(&mut sink, &state.hub, peer.as_ref()).await {
+                                    break;
+                                }
+                            }
+                            None
+                        }
                         Err(e) => Some(error_json(&e)),
                     }
                 }
             }
             env = rx.recv() => match env {
-                Ok(env) => Some(env.json.clone()),
+                Ok(env) if env.source == Source::Web(id) || env.visible_to(peer.as_ref()) => {
+                    Some(env.json.clone())
+                }
+                Ok(_) => None,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(id, "web client too slow, skipped {n} events");
                     None
@@ -119,6 +134,16 @@ async fn session(socket: WebSocket, state: AppState) {
         state.hub.publish(Source::Web(id), ev);
     }
     info!(id, uid = web.uid().unwrap_or("-"), "web client disconnected");
+}
+
+/// Sends addressed events `peer` may see, such as direct chats from before it connected.
+async fn replay_addressed(sink: &mut SplitSink<WebSocket, Message>, hub: &Hub, peer: Option<&Peer>) -> bool {
+    for env in hub.snapshot().iter().filter(|e| !e.dest.is_empty() && e.visible_to(peer)) {
+        if sink.send(Message::Text(env.json.clone().into())).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 fn error_json(message: &str) -> String {

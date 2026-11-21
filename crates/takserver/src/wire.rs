@@ -7,7 +7,7 @@ use cot::{Contact, Event, Group, Point, Takv, Track, xml_escape};
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 
-use crate::hub::{DELETE_TYPE, Source, link_uids};
+use crate::hub::{DELETE_TYPE, Peer, Source, link_uids};
 
 const MAX_TEXT: usize = 2_000;
 const MAX_NAME: usize = 64;
@@ -57,6 +57,7 @@ struct WireChat {
     sender_uid: String,
     sender_callsign: String,
     room: String,
+    room_id: String,
     text: String,
     time: i64,
 }
@@ -94,6 +95,7 @@ pub fn event_json(ev: &Event, source: Source) -> String {
             sender_uid: c.sender_uid,
             sender_callsign: c.sender_callsign,
             room: c.room,
+            room_id: c.room_id,
             text: c.text,
             time: c.time.timestamp_millis(),
         }),
@@ -134,6 +136,9 @@ pub enum ClientOp {
     Chat {
         id: String,
         text: String,
+        /// Recipient for a direct message; absent means All Chat Rooms.
+        #[serde(default)]
+        to: Option<ChatTo>,
     },
     Marker {
         uid: String,
@@ -148,6 +153,13 @@ pub enum ClientOp {
     Delete {
         uid: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatTo {
+    pub uid: String,
+    pub callsign: String,
 }
 
 /// One browser connection's identity, turning its ops into CoT events.
@@ -168,6 +180,10 @@ struct Identity {
 impl WebSession {
     pub fn uid(&self) -> Option<&str> {
         self.me.as_ref().map(|m| m.uid.as_str())
+    }
+
+    pub fn peer(&self) -> Option<Peer> {
+        self.me.as_ref().map(|m| Peer { uid: m.uid.clone(), callsign: m.callsign.clone() })
     }
 
     /// The last self report, re-sent already stale so maps drop this browser's icon now.
@@ -222,14 +238,22 @@ impl WebSession {
                 self.last_sa = Some(ev.clone());
                 ev
             }
-            ClientOp::Chat { id, text } => {
+            ClientOp::Chat { id, text, to } => {
                 check_id(&id)?;
                 let text = text.trim();
                 if text.is_empty() || text.chars().count() > MAX_TEXT {
                     return Err(format!("chat text must be 1 to {MAX_TEXT} characters"));
                 }
                 let point = self.last_point.unwrap_or(Point::new(0.0, 0.0));
-                GeoChat::to_all(&me.uid, &me.callsign, id, text, now).to_event(point)
+                let chat = match to {
+                    Some(to) => {
+                        check_id(&to.uid)?;
+                        check_name(&to.callsign)?;
+                        GeoChat::direct(&me.uid, &me.callsign, to.uid, to.callsign.trim(), id, text, now)
+                    }
+                    None => GeoChat::to_all(&me.uid, &me.callsign, id, text, now),
+                };
+                chat.to_event(point)
             }
             ClientOp::Marker { uid, marker_type, name, lat, lon, remarks } => {
                 check_id(&uid)?;

@@ -8,7 +8,9 @@ mod cot_type;
 mod error;
 mod event;
 pub mod framing;
+pub mod marti;
 pub mod proto;
+pub mod takp;
 mod xml;
 
 pub use cot_type::{Affiliation, CotType, Dimension};

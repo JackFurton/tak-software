@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MapView, type Basemap } from "./MapView";
-import { ChatPanel, ContactsPanel, DetailCard, MarkerDialog, SettingsDialog, type MarkerDraft } from "./panels";
+import { ChatPanel, ContactsPanel, DetailCard, MarkerDialog, SettingsDialog, isMarker, type MarkerDraft } from "./panels";
 import { randomId } from "./ids";
 import { useTakSocket } from "./socket";
-import { STALE_GRACE_MS, TEAM_COLORS, type Chat, type Identity, type ServerMessage, type TakEvent } from "./types";
+import {
+  ALL_ROOM,
+  STALE_GRACE_MS,
+  TEAM_COLORS,
+  roomOf,
+  type Chat,
+  type Identity,
+  type Room,
+  type ServerMessage,
+  type TakEvent,
+} from "./types";
 
 interface State {
   units: Record<string, TakEvent>;
@@ -80,6 +90,7 @@ export function App() {
   const [flyTo, setFlyTo] = useState<{ lat: number; lon: number; seq: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [seenChats, setSeenChats] = useState(0);
+  const [room, setRoom] = useState<Room>(ALL_ROOM);
 
   const onMessage = useCallback((msg: ServerMessage) => {
     if (msg.kind === "event") dispatch({ type: "event", event: msg.event });
@@ -139,6 +150,23 @@ export function App() {
   const units = useMemo(() => Object.values(state.units), [state.units]);
   const selectedUnit = selected ? state.units[selected] : undefined;
   const unread = panel === "chat" ? 0 : Math.max(0, state.chats.length - seenChats);
+  const rooms = useMemo(() => {
+    const byKey = new Map<string, Room>([[ALL_ROOM.key, ALL_ROOM]]);
+    for (const c of state.chats) {
+      const r = roomOf(c, identity?.uid);
+      byKey.set(r.key, r);
+    }
+    byKey.set(room.key, byKey.get(room.key) ?? room);
+    return [...byKey.values()];
+  }, [state.chats, identity?.uid, room]);
+
+  const sendChat = (text: string) => {
+    const id = randomId();
+    if (room.key === ALL_ROOM.key) return send({ op: "chat", id, text });
+    // Address by the contact's current callsign, which is what servers route on.
+    const callsign = state.units[room.key]?.callsign ?? room.name;
+    send({ op: "chat", id, text, to: { uid: room.key, callsign } });
+  };
 
   useEffect(() => {
     if (panel === "chat") setSeenChats(state.chats.length);
@@ -223,8 +251,11 @@ export function App() {
         <ChatPanel
           chats={state.chats}
           myUid={identity?.uid}
+          room={room}
+          rooms={rooms}
           disabled={status !== "open" || !identity}
-          onSend={(text) => send({ op: "chat", id: randomId(), text })}
+          onRoom={setRoom}
+          onSend={sendChat}
         />
       )}
 
@@ -237,6 +268,15 @@ export function App() {
             send({ op: "delete", uid: selectedUnit.uid });
             setSelected(null);
           }}
+          onMessage={
+            selectedUnit.callsign && !isMarker(selectedUnit) && selectedUnit.uid !== identity?.uid
+              ? () => {
+                  setRoom({ key: selectedUnit.uid, name: selectedUnit.callsign! });
+                  setPanel("chat");
+                  setSelected(null);
+                }
+              : undefined
+          }
         />
       )}
 

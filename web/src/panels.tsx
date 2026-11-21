@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { randomId } from "./ids";
-import { ROLES, TEAMS, TEAM_COLORS, type Chat, type Identity, type TakEvent } from "./types";
+import { ALL_ROOM, ROLES, TEAMS, TEAM_COLORS, roomOf, type Chat, type Identity, type Room, type TakEvent } from "./types";
 
 function age(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -9,7 +9,7 @@ function age(ms: number): string {
   return `${Math.floor(s / 3600)}h`;
 }
 
-const isMarker = (u: TakEvent) => u.how.startsWith("h-g-i-g-o");
+export const isMarker = (u: TakEvent) => u.how.startsWith("h-g-i-g-o");
 
 export function ContactsPanel(props: { units: TakEvent[]; now: number; myUid?: string; onPick: (u: TakEvent) => void }) {
   const devices = props.units.filter((u) => !isMarker(u)).sort((a, b) => (a.callsign ?? "").localeCompare(b.callsign ?? ""));
@@ -38,20 +38,36 @@ export function ContactsPanel(props: { units: TakEvent[]; now: number; myUid?: s
   );
 }
 
-export function ChatPanel(props: { chats: Chat[]; myUid?: string; disabled: boolean; onSend: (text: string) => void }) {
+export function ChatPanel(props: {
+  chats: Chat[];
+  myUid?: string;
+  room: Room;
+  rooms: Room[];
+  disabled: boolean;
+  onRoom: (room: Room) => void;
+  onSend: (text: string) => void;
+}) {
   const [text, setText] = useState("");
   const end = useRef<HTMLDivElement>(null);
+  const shown = props.chats.filter((c) => roomOf(c, props.myUid).key === props.room.key);
   // Braces matter: newer browsers return a Promise from scrollIntoView, which React would take
   // for a cleanup function and crash calling.
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [props.chats.length]);
+  }, [shown.length, props.room.key]);
   return (
     <aside className="panel chat">
-      <h2>All Chat Rooms</h2>
+      <nav className="rooms">
+        {props.rooms.map((r) => (
+          <button key={r.key} className={r.key === props.room.key ? "active" : ""} onClick={() => props.onRoom(r)}>
+            {r.key === ALL_ROOM.key ? "All" : r.name}
+          </button>
+        ))}
+      </nav>
+      <h2>{props.room.key === ALL_ROOM.key ? ALL_ROOM.name : `Direct · ${props.room.name}`}</h2>
       <div className="messages">
-        {props.chats.length === 0 && <p className="empty">No messages yet.</p>}
-        {props.chats.map((c) => (
+        {shown.length === 0 && <p className="empty">No messages yet.</p>}
+        {shown.map((c) => (
           <div key={c.id} className={`message ${c.sender_uid === props.myUid ? "mine" : ""}`}>
             <div className="from">
               {c.sender_callsign} · {new Date(c.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -76,7 +92,13 @@ export function ChatPanel(props: { chats: Chat[]; myUid?: string; disabled: bool
   );
 }
 
-export function DetailCard(props: { unit: TakEvent; now: number; onClose: () => void; onDelete: () => void }) {
+export function DetailCard(props: {
+  unit: TakEvent;
+  now: number;
+  onClose: () => void;
+  onDelete: () => void;
+  onMessage?: () => void;
+}) {
   const u = props.unit;
   const rows: [string, string | undefined][] = [
     ["Type", u.label ? `${u.label} (${u.type})` : u.type],
@@ -105,6 +127,7 @@ export function DetailCard(props: { unit: TakEvent; now: number; onClose: () => 
         ))}
       </dl>
       {isMarker(u) && <button className="danger" onClick={props.onDelete}>Delete marker</button>}
+      {props.onMessage && <button onClick={props.onMessage}>Message</button>}
     </section>
   );
 }

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, Duration, Utc};
-use cot::Event;
+use cot::marti::{self, Dest};
+use cot::{Event, framing};
 use roxmltree::Document;
 use tokio::sync::broadcast;
 use tracing::warn;
@@ -25,6 +26,13 @@ pub enum Source {
     Web(u64),
 }
 
+/// Who a connection speaks for, learned from its self SA (TCP) or hello (web).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub uid: String,
+    pub callsign: String,
+}
+
 /// An event plus its serialized forms, built once and shared by every subscriber.
 #[derive(Debug)]
 pub struct Envelope {
@@ -32,6 +40,38 @@ pub struct Envelope {
     pub event: Event,
     pub xml: String,
     pub json: String,
+    /// `<marti>` recipients; empty for a broadcast.
+    pub dest: Vec<Dest>,
+    // Most clients stay on XML, so only build this once someone negotiates protobuf.
+    protobuf: OnceLock<Vec<u8>>,
+}
+
+impl Envelope {
+    pub fn new(source: Source, event: Event) -> Self {
+        Self {
+            source,
+            json: wire::event_json(&event, source),
+            xml: event.to_xml(),
+            dest: marti::destinations(&event),
+            event,
+            protobuf: OnceLock::new(),
+        }
+    }
+
+    /// Stream framing for a TCP client, in whichever encoding it negotiated.
+    pub fn stream_bytes(&self, protobuf: bool) -> &[u8] {
+        if protobuf {
+            self.protobuf.get_or_init(|| framing::encode_stream(&self.event.to_tak_message()))
+        } else {
+            self.xml.as_bytes()
+        }
+    }
+
+    /// Whether `peer` should receive this. A connection that hasn't identified itself yet only
+    /// gets broadcasts.
+    pub fn visible_to(&self, peer: Option<&Peer>) -> bool {
+        self.dest.is_empty() || peer.is_some_and(|p| self.dest.iter().any(|d| d.matches(&p.uid, &p.callsign)))
+    }
 }
 
 /// Fans events out to every connected client and remembers the latest event per uid.
@@ -52,8 +92,7 @@ impl Hub {
     }
 
     pub fn publish(&self, source: Source, event: Event) {
-        let json = wire::event_json(&event, source);
-        let env = Arc::new(Envelope { source, xml: event.to_xml(), json, event });
+        let env = Arc::new(Envelope::new(source, event));
         {
             let mut latest = self.latest.lock().unwrap();
             if env.event.event_type == DELETE_TYPE {
@@ -139,6 +178,18 @@ mod tests {
         hub.publish(Source::Web(1), del);
         assert_eq!(hub.tracked(), 0);
         assert_eq!(rx.try_recv().unwrap().event.event_type, DELETE_TYPE);
+    }
+
+    #[test]
+    fn directed_only_to_recipient() {
+        let mut e = ev("chat", Utc::now());
+        e.detail.xml = marti::to_callsigns(["COBRA"]);
+        let env = Envelope::new(Source::Web(1), e);
+        let peer = |uid: &str, callsign: &str| Peer { uid: uid.into(), callsign: callsign.into() };
+        assert!(env.visible_to(Some(&peer("ANDROID-2", "COBRA"))));
+        assert!(!env.visible_to(Some(&peer("ANDROID-3", "VIPER"))));
+        assert!(!env.visible_to(None));
+        assert!(Envelope::new(Source::Mesh, ev("sa", Utc::now())).visible_to(None));
     }
 
     #[test]

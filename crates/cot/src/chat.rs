@@ -4,7 +4,7 @@
 use chrono::{DateTime, Duration, Utc};
 use roxmltree::{Document, Node};
 
-use crate::{Event, Point, xml_escape};
+use crate::{Event, Point, marti, xml_escape};
 
 pub const CHAT_TYPE: &str = "b-t-f";
 pub const ALL_CHAT_ROOMS: &str = "All Chat Rooms";
@@ -41,7 +41,29 @@ impl GeoChat {
         }
     }
 
-    /// `point` is the sender's position; ATAK plots chat origins on the map.
+    /// A one-to-one message. ATAK names the room after the recipient on the sender's side.
+    pub fn direct(
+        sender_uid: impl Into<String>,
+        sender_callsign: impl Into<String>,
+        to_uid: impl Into<String>,
+        to_callsign: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            room: to_callsign.into(),
+            room_id: to_uid.into(),
+            ..Self::to_all(sender_uid, sender_callsign, message_id, text, time)
+        }
+    }
+
+    pub fn is_direct(&self) -> bool {
+        self.room_id != ALL_CHAT_ROOMS
+    }
+
+    /// `point` is the sender's position; ATAK plots chat origins on the map. Direct messages get
+    /// a `<marti>` dest so servers deliver them only to the recipient.
     pub fn to_event(&self, point: Point) -> Event {
         let mut ev = Event::new(
             format!("GeoChat.{}.{}.{}", self.sender_uid, self.room_id, self.message_id),
@@ -71,6 +93,9 @@ impl GeoChat {
             time = time,
             text = e(&self.text),
         );
+        if self.is_direct() {
+            ev.detail.xml.push_str(&marti::to_callsigns([self.room.as_str()]));
+        }
         ev
     }
 
@@ -141,6 +166,22 @@ mod tests {
         assert_eq!(ev.uid, "GeoChat.WEB-1.All Chat Rooms.m-1");
         let back = Event::from_xml(&ev.to_xml()).unwrap();
         assert_eq!(GeoChat::from_event(&back), Some(chat));
+    }
+
+    #[test]
+    fn direct_is_addressed() {
+        let chat = GeoChat::direct("WEB-1", "KESTREL", "ANDROID-2", "COBRA", "m-2", "hi", Utc::now());
+        let ev = chat.to_event(Point::new(0.0, 0.0));
+        assert_eq!(ev.uid, "GeoChat.WEB-1.ANDROID-2.m-2");
+        let dests = marti::destinations(&ev);
+        assert!(dests.len() == 1 && dests[0].matches("-", "COBRA"));
+        assert!(
+            marti::destinations(&GeoChat::to_all("a", "b", "c", "d", Utc::now()).to_event(ev.point))
+                .is_empty()
+        );
+        let back = GeoChat::from_event(&ev).unwrap();
+        assert!(back.is_direct());
+        assert_eq!((back.room.as_str(), back.room_id.as_str()), ("COBRA", "ANDROID-2"));
     }
 
     #[test]

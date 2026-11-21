@@ -257,6 +257,24 @@ button.active .count {
   padding: 0 14px;
 }
 
+.rooms {
+  display: flex;
+  gap: 4px;
+  padding: 10px 10px 0;
+  overflow-x: auto;
+  flex: none;
+}
+
+.rooms button {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.card > button + button {
+  margin-left: 6px;
+}
+
 .chat .messages {
   flex: 1;
   overflow-y: auto;
